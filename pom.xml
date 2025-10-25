@@ -213,7 +213,7 @@
         <module>debezium-connector-sqlserver</module>
         <module>debezium-connector-oracle</module>
         <module>debezium-connector-binlog</module>
-        <module>debezium-binlog-lock-interceptor</module>
+        <module>debezium-binlog-lock-rewriter</module>
         <module>debezium-connector-mariadb</module>
         <module>debezium-connector-jdbc</module>
         <module>debezium-microbenchmark-engine</module>
