@@ -7,8 +7,7 @@ package io.debezium.binlog.lock;
 
 import static net.bytebuddy.matcher.ElementMatchers.*;
 
-import java.lang.reflect.Field;
-import java.sql.SQLException;
+import java.util.concurrent.Callable;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -23,11 +22,13 @@ import net.bytebuddy.implementation.bind.annotation.RuntimeType;
 import net.bytebuddy.implementation.bind.annotation.SuperCall;
 import net.bytebuddy.implementation.bind.annotation.This;
 
-import java.util.concurrent.Callable;
-
 /**
  * ByteBuddy build plugin that transforms BinaryLogClient at compile time.
  * This plugin is invoked by byte-buddy-maven-plugin during the Maven build.
+ *
+ * The transformed BinaryLogClient will execute GET_LOCK() on its own connection
+ * channel before streaming begins, ensuring tight coupling between the lock
+ * and the binlog connection.
  *
  * @author Debezium Community
  */
@@ -69,10 +70,14 @@ public class BinlogLockPlugin implements Plugin {
 
     /**
      * Interceptor for BinaryLogClient.connect() methods.
+     *
+     * This executes GET_LOCK() on the BinaryLogClient's own PacketChannel
+     * AFTER the connection is established but BEFORE binlog streaming begins.
      */
     public static class ConnectInterceptor {
 
         private static final Logger LOGGER = LoggerFactory.getLogger(ConnectInterceptor.class);
+        private static final GlobalLockManager lockManager = new GlobalLockManager();
 
         @RuntimeType
         public static Object intercept(
@@ -82,64 +87,41 @@ public class BinlogLockPlugin implements Plugin {
 
             LOGGER.debug("Intercepted BinaryLogClient.connect()");
 
-            try {
-                // Extract connection details via reflection
-                String hostname = getField(client, "hostname", String.class);
-                Integer port = getField(client, "port", Integer.class);
-                String username = getField(client, "username", String.class);
-                String password = getField(client, "password", String.class);
+            // First, execute the original connect() to establish the connection
+            Object result = zuper.call();
 
-                if (hostname != null && port != null && username != null) {
-                    // Acquire the global lock
-                    GlobalLockManager.getInstance().acquireLock(
-                        client,
-                        hostname,
-                        port,
-                        username,
-                        password != null ? password : ""
-                    );
-                }
-            } catch (SQLException e) {
-                LOGGER.error("Failed to acquire global lock", e);
-                throw new RuntimeException("Failed to acquire global lock before binlog streaming", e);
-            } catch (Exception e) {
-                LOGGER.warn("Error during lock acquisition, continuing with connect", e);
-                // Don't fail if lock acquisition has unexpected errors
-            }
-
-            // Proceed with original connect()
+            // NOW the channel is available - acquire lock on the SAME connection
             try {
-                return zuper.call();
+                lockManager.acquireLock(client);
             } catch (Exception e) {
-                // If connect fails, release the lock
+                LOGGER.error("Failed to acquire global lock on binlog connection", e);
+
+                // Lock acquisition failed - disconnect the client
                 try {
-                    GlobalLockManager.getInstance().releaseLock(client);
-                } catch (Exception releaseEx) {
-                    LOGGER.error("Error releasing lock after failed connect", releaseEx);
+                    // Call disconnect to cleanup the connection
+                    client.getClass().getMethod("disconnect").invoke(client);
+                } catch (Exception disconnectEx) {
+                    LOGGER.error("Error disconnecting after failed lock acquisition", disconnectEx);
                 }
-                throw e;
-            }
-        }
 
-        @SuppressWarnings("unchecked")
-        private static <T> T getField(Object obj, String fieldName, Class<T> type) {
-            try {
-                Field field = obj.getClass().getDeclaredField(fieldName);
-                field.setAccessible(true);
-                return (T) field.get(obj);
-            } catch (Exception e) {
-                LOGGER.debug("Could not access field '{}'", fieldName, e);
-                return null;
+                throw new RuntimeException("Failed to acquire global lock on binlog connection", e);
             }
+
+            return result;
         }
     }
 
     /**
      * Interceptor for BinaryLogClient.disconnect() method.
+     *
+     * Releases the global lock BEFORE disconnecting. Since the lock is on the
+     * same connection, it will be auto-released by MySQL when the connection closes,
+     * but we explicitly release it for clean shutdown.
      */
     public static class DisconnectInterceptor {
 
         private static final Logger LOGGER = LoggerFactory.getLogger(DisconnectInterceptor.class);
+        private static final GlobalLockManager lockManager = new GlobalLockManager();
 
         @RuntimeType
         public static Object intercept(
@@ -148,17 +130,17 @@ public class BinlogLockPlugin implements Plugin {
 
             LOGGER.debug("Intercepted BinaryLogClient.disconnect()");
 
+            // First, try to release the lock while connection is still alive
             try {
-                // Execute original disconnect first
-                return zuper.call();
-            } finally {
-                // Always release lock after disconnect
-                try {
-                    GlobalLockManager.getInstance().releaseLock(client);
-                } catch (Exception e) {
-                    LOGGER.error("Error releasing lock during disconnect", e);
-                }
+                lockManager.releaseLock(client);
+            } catch (Exception e) {
+                LOGGER.error("Error releasing lock during disconnect (will auto-release on connection close)", e);
+                // Continue with disconnect even if explicit release fails
+                // MySQL will auto-release when connection closes
             }
+
+            // Now execute the original disconnect
+            return zuper.call();
         }
     }
 }

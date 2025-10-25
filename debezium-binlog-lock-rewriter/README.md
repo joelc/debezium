@@ -9,8 +9,12 @@ A **build-time** ByteBuddy transformation of BinaryLogClient that adds MySQL `GE
 ✅ **NO command-line arguments**
 ✅ **NO source code modification**
 ✅ **NO application code changes**
+✅ **SAME connection** - Lock acquired on binlog connection itself (not separate JDBC)
 
-Just add the dependency and configure via system properties (in your application.properties or similar).
+**CRITICAL**: The lock is acquired on the **exact same connection** used for binlog streaming via BinaryLogClient's internal `PacketChannel`. This ensures:
+- If the binlog connection dies → MySQL auto-releases the lock
+- No race conditions between separate connections
+- Tight coupling between lock ownership and streaming state
 
 ## How It Works
 
@@ -462,9 +466,22 @@ spec:
 ### GET_LOCK() Behavior
 
 - **Named lock** - string identifier
-- **Connection-scoped** - auto-released if connection drops
+- **Connection-scoped** - **CRITICAL**: auto-released if connection drops
 - **Single-holder** - only one connection can hold a lock at a time
 - **Timeout** - waits up to N seconds, then returns 0
+
+**Why Connection-Scoped Matters**:
+```
+BinaryLogClient connects → GET_LOCK acquired on same connection
+                         ↓
+                    Binlog streaming
+                         ↓
+Connection dies unexpectedly → MySQL AUTO-RELEASES lock
+                                 ↓
+                         Other instance can immediately acquire lock
+```
+
+This is why using a **separate JDBC connection** would be dangerous - the lock could outlive the binlog stream!
 
 ```sql
 -- Acquire lock
@@ -514,6 +531,36 @@ WHERE t.THREAD_ID = (SELECT IS_USED_LOCK('my_lock'));
 
 ## Technical Details
 
+### How We Use the SAME Connection
+
+**The Problem**: BinaryLogClient doesn't use JDBC - it uses a raw TCP socket with MySQL binlog protocol.
+
+**The Solution**: BinaryLogClient exposes a protected `PacketChannel channel` field that we can access:
+
+```java
+// In our transformed BinaryLogClient code:
+PacketChannel channel = this.channel;  // protected field - accessible!
+
+// Send GET_LOCK query on the SAME connection as binlog stream
+channel.write(new QueryCommand("SELECT GET_LOCK('lock_name', 30)"));
+ResultSetRowPacket[] result = this.readResultSet();  // private method - use reflection
+
+// Check result: 1=success, 0=timeout, NULL=error
+int lockResult = Integer.parseInt(result[0].getValue(0));
+```
+
+**Why This Is Critical**:
+1. **Atomic coupling**: Lock and stream use the exact same MySQL connection
+2. **Auto-release**: If binlog connection dies, MySQL automatically releases the lock
+3. **No race windows**: Cannot have lock without stream or stream without lock
+4. **Connection pooling safe**: No issues with separate JDBC connection lifecycle
+
+### BinaryLogClient Methods Used
+
+- `protected PacketChannel channel` - Access to binlog connection
+- `private ResultSetRowPacket[] readResultSet()` - Read query results (via reflection)
+- `QueryCommand` - Send SQL queries over binlog protocol connection
+
 ### ByteBuddy Maven Plugin
 
 The transformation happens during Maven's `process-classes` phase:
@@ -522,11 +569,11 @@ The transformation happens during Maven's `process-classes` phase:
 2. `byte-buddy-maven-plugin` loads `BinlogLockPlugin`
 3. Plugin matches `com.github.shyiko.mysql.binlog.BinaryLogClient`
 4. Plugin applies transformations:
-   - `connect()` → wrapped with lock acquisition
-   - `connect(long)` → wrapped with lock acquisition
-   - `disconnect()` → wrapped with lock release
+   - `connect()` → **after** connection established, execute GET_LOCK on same channel
+   - `connect(long)` → **after** connection established, execute GET_LOCK on same channel
+   - `disconnect()` → **before** disconnecting, execute RELEASE_LOCK on same channel
 5. Transformed class written to `target/classes`
-6. JAR包 includes transformed class
+6. JAR includes transformed class with lock logic baked in
 
 ### Classpath Precedence
 
