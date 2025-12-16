@@ -25,3 +25,6 @@
 # Specify we want Java-friendly readable chunk headers for diff:
 
 *.java	diff=java
+
+# Use bd merge for beads JSONL files
+.beads/issues.jsonl merge=beads
