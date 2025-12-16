@@ -16,12 +16,13 @@ ENV KAFKA_HOME=/opt/kafka \
 ENV KAFKA_CONNECT_PLUGINS=$KAFKA_HOME/new-connector-plugins
 
 #
-# Install JAVA 17 JDK from binaries
+# Install JAVA 25 JDK from binaries (Adoptium Temurin)
 #
 RUN mkdir -p /tmp/ /usr/local/java \
-    && curl -L -o /tmp/openjdk-17.0.2_linux-x64_bin.tar.gz https://download.java.net/java/GA/jdk17.0.2/dfd4a8d0985749f896bed50d7138ee7f/8/GPL/openjdk-17.0.2_linux-x64_bin.tar.gz \
-    && tar -xzf /tmp/openjdk-17.0.2_linux-x64_bin.tar.gz -C /usr/local/java
-ENV JAVA_HOME=/usr/local/java/jdk-17.0.2
+    && curl -L -o /tmp/openjdk-25_linux-x64_bin.tar.gz https://api.adoptium.net/v3/binary/latest/25/ga/linux/x64/jdk/hotspot/normal/eclipse \
+    && tar -xzf /tmp/openjdk-25_linux-x64_bin.tar.gz -C /usr/local/java \
+    && mv /usr/local/java/jdk-25* /usr/local/java/jdk-25
+ENV JAVA_HOME=/usr/local/java/jdk-25
 ENV PATH="${JAVA_HOME}/bin:${PATH}"
 
 #

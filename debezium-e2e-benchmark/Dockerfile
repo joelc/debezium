@@ -1,7 +1,7 @@
-FROM centos:8
+FROM fedora:40
 
 
-RUN dnf -y install java-1.8.0-openjdk java-1.8.0-openjdk-devel
+RUN dnf -y install java-25-openjdk java-25-openjdk-devel
 RUN dnf -y install python3
 RUN dnf -y install gcc gcc-c++  python3-devel python3-requests
 RUN python3 -m pip install JPype1==0.6.3

@@ -56,13 +56,13 @@
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
 
         <!-- Required Java versions -->
-        <debezium.java.source>21</debezium.java.source>
+        <debezium.java.source>25</debezium.java.source>
 
         <!-- Java version used for connectors and core libraries -->
-        <debezium.java.connector.target>17</debezium.java.connector.target>
+        <debezium.java.connector.target>25</debezium.java.connector.target>
 
         <!-- Java version used for Debezium spcific components - Server, Operator, Outbox -->
-        <debezium.java.specific.target>21</debezium.java.specific.target>
+        <debezium.java.specific.target>25</debezium.java.specific.target>
 
 
         <maven.compiler.source>${debezium.java.source}</maven.compiler.source>

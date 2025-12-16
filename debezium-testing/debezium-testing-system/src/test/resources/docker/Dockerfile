@@ -10,10 +10,10 @@ ARG sdkman_init="/root/.sdkman/bin/sdkman-init.sh"
 
 RUN curl -s "https://get.sdkman.io" | bash
 RUN source $sdkman_init &&\
-    sdk install java 21.0.3-tem
+    sdk install java 25-tem
 
 RUN source $sdkman_init &&\
-    sdk install java 21.0.3-tem
+    sdk install java 25-tem
 
 RUN mkdir /root/testsuite
 COPY testsuite.sh /root/testsuite/testsuite.sh
